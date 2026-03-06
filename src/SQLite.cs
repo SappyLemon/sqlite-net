@@ -2860,6 +2860,19 @@ namespace SQLite
 		}
 	}
 
+	[AttributeUsage(AttributeTargets.Property)]
+	public class GeneratedAttribute : Attribute
+	{
+		public string CustomExpression { get; set; }
+		public bool Virtual { get; set; }
+
+		public GeneratedAttribute(string customExpression, bool @virtual = false)
+		{
+			CustomExpression = customExpression;
+			Virtual = @virtual;
+		}
+	}
+
 	[AttributeUsage (AttributeTargets.Property)]
 	public class IgnoreAttribute : Attribute
 	{
@@ -2997,7 +3010,7 @@ namespace SQLite
 				GetByPrimaryKeySql = string.Format ("select * from \"{0}\" limit 1", TableName);
 			}
 
-			_insertColumns = Columns.Where (c => !c.IsAutoInc).ToArray ();
+			_insertColumns = Columns.Where (c => !c.IsAutoInc && !c.IsGenerated).ToArray ();
 			_insertOrReplaceColumns = Columns.ToArray ();
 		}
 
@@ -3109,6 +3122,10 @@ namespace SQLite
 
 			public bool IsPK { get; private set; }
 
+			public bool IsGenerated { get; private set; }
+			public bool IsGeneratedVirtual { get; private set; }
+			public string GeneratedCustomExpression { get; private set; }
+			
 			public IEnumerable<IndexedAttribute> Indices { get; set; }
 
 			public bool IsNullable { get; private set; }
@@ -3142,6 +3159,12 @@ namespace SQLite
 				var isAuto = Orm.IsAutoInc (member) || (IsPK && ((createFlags & CreateFlags.AutoIncPK) == CreateFlags.AutoIncPK));
 				IsAutoGuid = isAuto && ColumnType == typeof (Guid);
 				IsAutoInc = isAuto && !IsAutoGuid;
+
+
+				var generatedAttr = (GeneratedAttribute) Attribute.GetCustomAttribute(member, typeof (GeneratedAttribute));
+				IsGenerated = generatedAttr != null;
+				GeneratedCustomExpression = IsGenerated ? generatedAttr.CustomExpression : null;
+				IsGeneratedVirtual = generatedAttr?.Virtual ?? false;
 
 				Indices = Orm.GetIndices (member);
 				if (!Indices.Any ()
@@ -3296,6 +3319,11 @@ namespace SQLite
 			}
 			if (!string.IsNullOrEmpty (p.Collation)) {
 				decl += "collate " + p.Collation + " ";
+			}
+			if(p.IsGenerated)
+			{
+				decl += " GENERATED ALWAYS AS (" + p.GeneratedCustomExpression + ") " 
+					+ (p.IsGeneratedVirtual ? "VIRTUAL" : "STORED") + " ";
 			}
 
 			return decl;
@@ -4275,6 +4303,14 @@ namespace SQLite
 		}
 	}
 
+	public static class JSONExtensions
+	{
+		public static T JsonExtract<T>(this string source, string jsonPathSelector)
+		{
+			throw new NotSupportedException("JsonExtract is only supported in expressions and cannot be called directly.");
+		}
+	}
+
 	public class TableQuery<
 #if NET8_0_OR_GREATER
 		[DynamicallyAccessedMembers (DynamicallyAccessedMemberTypes.All)]
@@ -4612,8 +4648,18 @@ namespace SQLite
 				var args = new CompileResult[call.Arguments.Count];
 				var obj = call.Object != null ? CompileExpr (call.Object, queryArgs) : null;
 
-				for (var i = 0; i < args.Length; i++) {
-					args[i] = CompileExpr (call.Arguments[i], queryArgs);
+				if(call.Method.Name == "JsonExtract") {
+					args[0] = CompileExpr (call.Arguments[0], queryArgs);
+					// avoid compiling the JSON path argument since it needs to be a constant 
+					// in order to be inlined into the SQL query, and compiling it would cause 
+					// it to be treated as a parameter instead
+					var c = (ConstantExpression)call.Arguments[1];
+					args[1] = new CompileResult{ Value = c.Value };
+				}
+				else {
+					for (var i = 0; i < args.Length; i++) {
+						args[i] = CompileExpr (call.Arguments[i], queryArgs);
+					}
 				}
 
 				var sqlCall = "";
@@ -4679,6 +4725,9 @@ namespace SQLite
 				}
 				else if (call.Method.Name == "IsNullOrEmpty" && args.Length == 1) {
 					sqlCall = "(" + args[0].CommandText + " is null or" + args[0].CommandText + " ='' )";
+				}
+				else if (call.Method.Name == "JsonExtract" && args.Length == 2) {
+					sqlCall = "(json_extract(" + args[0].CommandText + ", '" + args[1].Value + "'))";
 				}
 				else {
 					sqlCall = call.Method.Name.ToLower () + "(" + string.Join (",", args.Select (a => a.CommandText).ToArray ()) + ")";

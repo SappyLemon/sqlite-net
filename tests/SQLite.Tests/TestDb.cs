@@ -51,6 +51,17 @@ namespace SQLite.Tests
 		Shipped = 100
 	}
 
+	public class JsonExt
+	{
+		[AutoIncrement, PrimaryKey]
+		public int Id { get; set; }
+
+		public string JsonValue { get; set; }
+
+		[Generated("json_extract(JsonValue, '$.Value1')", false)]
+		public string Value1 { get; set; }
+	}
+
 	public class TestDb : SQLiteConnection
 	{
 		public TestDb (bool storeDateTimeAsTicks = true, object key = null, bool wal = true) : base (new SQLiteConnectionString (TestPath.GetTempFileName (), storeDateTimeAsTicks, key: key))
